@@ -195,47 +195,82 @@ if __name__ == "__main__":
     for epoch_num in tqdm(range(max_epoch), ncols=70):
         for i_batch, sampled_batch in enumerate(trainloader):
             volume_batch, label_batch, label_full_batch = sampled_batch['image'], sampled_batch['label'], sampled_batch['label_full']
-
+            # print(f'volume_batch.shape: {volume_batch.shape}')  # [4, 1, 112, 112, 80]
+            # print(f'label_batch.shape: {label_batch.shape}')    # [4, 112, 112, 80]
+            # print(f'label_full_batch.shape: {label_full_batch.shape}')  # [4, 112, 112, 80]
+            # a = []
+            # b = a[10]
             ### Train Registration Module
             slice_volume_batch = volume_batch.cpu().detach().numpy()
+            # print(f'slice_volume_batch.shape: {slice_volume_batch.shape}')  # (4, 1, 112, 112, 80)
             slice_volume_batch = np.squeeze(slice_volume_batch, 1)
+            # print(f'slice_volume_batch.shape: {slice_volume_batch.shape}')  # (4, 112, 112, 80)
             slice_volume_batch = np.transpose(slice_volume_batch, (0, 3, 1, 2))
+            # print(f'slice_volume_batch.shape: {slice_volume_batch.shape}')  # (4, 80, 112, 112)
             slice_volume_batch = slice_volume_batch.reshape((-1, slice_volume_batch.shape[2], slice_volume_batch.shape[3]))
+            # print(f'slice_volume_batch.shape: {slice_volume_batch.shape}')  # (320, 112, 112)
+            # a = []
+            # b = a[10]
 
             slice_label_batch = label_batch.cpu().detach().numpy()
+            # print(f'slice_label_batch.shape: {slice_label_batch.shape}')    # (4, 112, 112, 80)
             slice_label_batch = slice_label_batch[:labeled_bs]
+            # print(f'slice_label_batch.shape: {slice_label_batch.shape}')    # (2, 112, 112, 80)
             lbl_idx = label_index(slice_label_batch, labeled_bs, num_slice)         # get labeled slice index
+            # print(f'lbl_idx.shape: {lbl_idx.shape}')    # (2,)
             slice_label_batch = np.transpose(slice_label_batch, (0, 3, 1, 2))
+            # print(f'slice_label_batch.shape: {slice_label_batch.shape}')    # (2, 80, 112, 112)
             slice_label_batch = slice_label_batch.reshape((-1, slice_label_batch.shape[2], slice_label_batch.shape[3]))
+            # print(f'slice_label_batch.shape: {slice_label_batch.shape}')    # (160, 112, 112)
+            # a = []
+            # b = a[10]
+            # 获得前两个volume的label
 
             train_generator = vxm_data_generator(num_slice, x_data=slice_volume_batch, x_label=None, batch_size=32)
+            # print(f'num_slice.shape: {num_slice}')  # 80
+
+            # 每个batch要训练10epoch的配准
             for i in range(1, args.reg_iter + 1):
                 input_sample = next(train_generator)
+                # print(f'len(input_sample): {len(input_sample)}')  # 2
                 input_moving, input_fixed = torch.from_numpy(input_sample[0]).cuda().float(), torch.from_numpy(input_sample[1]).cuda().float()
-
+                # print(f'input_moving, input_fixed.shape: {input_moving.shape, input_fixed.shape}')  # [32, 1, 112, 112] [32, 1, 112, 112]
+                # a = []
+                # b = a[10]
                 flow_m2f = reg_unet(input_moving, input_fixed)
                 m2f = reg_stn(input_moving, flow_m2f)
 
                 # Calculate loss
-                reg_loss = sim_loss_fn(m2f, input_fixed)
+                reg_loss = sim_loss_fn(m2f, input_fixed)    # eq1
 
                 reg_optimizer.zero_grad()
                 reg_loss.backward()
                 reg_optimizer.step()
 
-            if epoch_num >= args.pretrain_reg_epoch:
+                # 200个epoch后再训练半监督分割
+
+            # 为了测试先注释掉if
+            # if epoch_num >= args.pretrain_reg_epoch:
                 # Generate registration prediction
                 reg_unet.eval()
                 reg_pred = regnet_test(slice_volume_batch, slice_label_batch, reg_unet, reg_stn_label, label_batch[:labeled_bs].shape, num_slice, lbl_idx)
+                # print(f'reg_pred.shape: {reg_pred.shape}')  # (2, 112, 112, 80)
                 reg_unet.train()
+
 
                 ### Train Semi-supervised Segmentation Module
                 volume_batch = volume_batch.cuda()
                 noise = torch.clamp(torch.randn_like(volume_batch) * 0.1, -0.2, 0.2)
                 ema_inputs = volume_batch + noise
-
                 outputs = model(volume_batch)
+                # print(f'volume_batch.shape: {volume_batch.shape}')  # [4, 1, 112, 112, 80]
+                # print(f'outputs.shape: {outputs.shape}')  # [4, 2, 112, 112, 80] 第二个维度的2代表前景与背景
+                # a = []
+                # b = a[10]
+
                 outputs_soft = F.softmax(outputs, dim=1)
+                # print(f'outputs_soft.shape: {outputs_soft.shape}')  # [4, 2, 112, 112, 80]
+
                 with torch.no_grad():
                     ema_outputs = ema_model(ema_inputs)
                     ema_outputs_soft = F.softmax(ema_outputs, dim=1)
@@ -244,6 +279,7 @@ if __name__ == "__main__":
                 # Pseudo-labels Generation
                 w_p = args.w_p_max * pow(iter_num / max_iterations, args.alpha_p)
                 seg_pred, prediction = get_prediction(reg_pred, w_p, ema_outputs_soft, lbl_idx, labeled_bs)
+                # 给出半监督的混合预测
 
                 # Save imgs
                 if iter_num % args.save_img == 0:
